@@ -53,6 +53,12 @@ public:
         if (plugin.edit.isLoading())
             return;
 
+        if (plugin.isRestoringPluginState.load (std::memory_order_acquire))
+        {
+            processorChanged = true;
+            return;
+        }
+
         processorChanged = true;
         triggerAsyncUpdate();
     }
@@ -71,7 +77,7 @@ private:
         return false;
     }
 
-    void updateFromPlugin()
+    void updateFromPlugin (bool restartOnLatencyChange, bool clearDevicesOnLatencyChange)
     {
         TRACKTION_ASSERT_MESSAGE_THREAD
         bool wasLatencyChange = false;
@@ -88,9 +94,11 @@ private:
                     plugin.latencySeconds = plugin.latencySamples / plugin.sampleRate;
                 }
 
-                plugin.edit.restartPlayback(); // Restart playback to rebuild audio graph for the new latency to take effect
+                if (restartOnLatencyChange)
+                    plugin.edit.restartPlayback(); // Restart playback to rebuild audio graph for the new latency to take effect
 
-                plugin.edit.getTransport().triggerClearDevicesOnStop(); // This will fully re-initialise plugins
+                if (clearDevicesOnLatencyChange)
+                    plugin.edit.getTransport().triggerClearDevicesOnStop(); // This will fully re-initialise plugins
             }
 
             pi->refreshParameterList();
@@ -121,6 +129,17 @@ private:
         plugin.edit.pluginChanged (plugin);
     }
 
+public:
+    void updateAfterPluginStateRestore()
+    {
+        cancelPendingUpdate();
+        paramChanged = false;
+        processorChanged = false;
+        updateFromPlugin (false, false);
+    }
+
+private:
+
     void handleAsyncUpdate() override
     {
         if (paramChanged)
@@ -131,7 +150,7 @@ private:
         if (processorChanged)
         {
             processorChanged = false;
-            updateFromPlugin();
+            updateFromPlugin (true, true);
         }
     }
 
@@ -163,6 +182,12 @@ public:
     {
         processorChangedManager.reset();
         return std::move (pluginInstance);
+    }
+
+    void updateAfterPluginStateRestore()
+    {
+        if (processorChangedManager != nullptr)
+            processorChangedManager->updateAfterPluginStateRestore();
     }
 
 private:
@@ -1080,14 +1105,38 @@ void ExternalPlugin::restorePluginStateFromValueTree (const juce::ValueTree& v)
     {
         CRASH_TRACER_PLUGIN (getDebugName());
 
-        if (getNumPrograms() > 1)
-            setCurrentProgram (v.getProperty (IDs::programNum), false);
+        struct ScopedPluginStateRestoreFlag
+        {
+            explicit ScopedPluginStateRestoreFlag (std::atomic<bool>& f) : flag (f)
+            {
+                flag.store (true, std::memory_order_release);
+            }
+
+            ~ScopedPluginStateRestoreFlag()
+            {
+                flag.store (false, std::memory_order_release);
+            }
+
+            std::atomic<bool>& flag;
+        };
+
+        const ScopedPluginStateRestoreFlag stateRestoreScope { isRestoringPluginState };
 
         juce::MemoryBlock chunk;
         chunk.fromBase64Encoding (s);
 
-        if (chunk.getSize() > 0)
-            callBlockingCatching ([&pi, &chunk] { pi->setStateInformation (chunk.getData(), (int) chunk.getSize()); });
+        {
+            const juce::ScopedLock sl (processMutex);
+
+            if (getNumPrograms() > 1)
+                setCurrentProgram (v.getProperty (IDs::programNum), false);
+
+            if (chunk.getSize() > 0)
+                callBlockingCatching ([&pi, &chunk] { pi->setStateInformation (chunk.getData(), (int) chunk.getSize()); });
+        }
+
+        if (loadedInstance != nullptr)
+            loadedInstance->updateAfterPluginStateRestore();
     }
 }
 
@@ -1342,7 +1391,23 @@ void ExternalPlugin::applyToBuffer (const PluginRenderContext& fc)
     assert (loadedInstance);
     CRASH_TRACER_PLUGIN (getDebugName());
 
-    const juce::ScopedLock sl (processMutex);
+    if (! processMutex.tryEnter())
+    {
+        if (isRestoringPluginState.load (std::memory_order_acquire))
+            return;
+
+        processMutex.enter();
+    }
+
+    struct ScopedProcessMutexExit
+    {
+        explicit ScopedProcessMutexExit (juce::CriticalSection& m) : mutex (m) {}
+        ~ScopedProcessMutexExit() { mutex.exit(); }
+
+        juce::CriticalSection& mutex;
+    };
+
+    const ScopedProcessMutexExit processMutexExit (processMutex);
     auto pi = getAudioPluginInstance();
 
     if (playhead != nullptr)

@@ -143,7 +143,8 @@ private:
     class ProcessorChangedManager;
     class LoadedInstance;
     std::unique_ptr<LoadedInstance> loadedInstance;
-    std::atomic<bool> hasLoadedInstance { false }, isInstancePrepared { false }, isAsyncInitialising { false };
+    std::atomic<bool> hasLoadedInstance { false }, isInstancePrepared { false },
+                      isAsyncInitialising { false }, isRestoringPluginState { false };
 
     std::unique_ptr<VSTXML> vstXML;
     int latencySamples = 0;
