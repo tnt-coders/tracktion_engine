@@ -46,6 +46,11 @@ public:
     void rescanMidiDeviceList();
     void rescanWaveDeviceList();
 
+    /** Applies a MIDI device-list update that was deferred because a context was playing.
+        Call this when transport playback stops; it is a no-op if nothing is pending.
+    */
+    void rescanDeferredMidiDeviceList();
+
     int getMidiDeviceScanIntervalSeconds() const        { return midiRescanIntervalSeconds; }
     void setMidiDeviceScanIntervalSeconds (int intervalSeconds);
 
@@ -256,6 +261,11 @@ private:
     int midiRescanIntervalSeconds = 4;
     bool onlyRescanMidiOnHardwareChange = true;
 
+    // True when a MIDI device-list change was detected but deferred because a context was playing.
+    // Flushed by rescanDeferredMidiDeviceList() once playback stops, and cleared whenever an update
+    // is applied or a pending change later nets out to no change.
+    bool midiDeviceListUpdateDeferred = false;
+
     struct MIDIDeviceList;
     std::unique_ptr<MIDIDeviceList> lastMIDIDeviceList;
 
@@ -265,7 +275,7 @@ private:
     struct PrepareToStartCaller;
     std::unique_ptr<PrepareToStartCaller> prepareToStartCaller;
 
-    std::shared_mutex contextLock;
+    mutable std::shared_mutex contextLock;
     juce::Array<EditPlaybackContext*> activeContexts;
     std::unique_ptr<juce::AudioProcessor> globalOutputAudioProcessor;
     juce::HeapBlock<const float*> inputChannelsScratch;
@@ -283,6 +293,9 @@ private:
 
     void applyNewMidiDeviceList();
     void restartMidiCheckTimer();
+
+    /** Returns true if any active EditPlaybackContext is currently playing. */
+    bool hasActivePlayingContext() const;
 
     void clearAllContextDevices();
     void reloadAllContextDevices();

@@ -513,6 +513,12 @@ void DeviceManager::rescanMidiDeviceList()
     startTimer (5);
 }
 
+void DeviceManager::rescanDeferredMidiDeviceList()
+{
+    if (midiDeviceListUpdateDeferred)
+        rescanMidiDeviceList();
+}
+
 void DeviceManager::timerCallback()
 {
     applyNewMidiDeviceList();
@@ -534,7 +540,10 @@ void DeviceManager::applyNewMidiDeviceList()
 
     if (onlyRescanMidiOnHardwareChange
          && ! newList->hasHardwareChanged (*lastMIDIDeviceList))
+    {
+        midiDeviceListUpdateDeferred = false;
         return;
+    }
 
     onlyRescanMidiOnHardwareChange = true;
 
@@ -547,7 +556,28 @@ void DeviceManager::applyNewMidiDeviceList()
                             || defaultMidiInID != newDefaultIn);
 
     if (! defaultsChanged && *newList == *lastMIDIDeviceList)
+    {
+        midiDeviceListUpdateDeferred = false;
         return;
+    }
+
+    // Applying a MIDI device-list change rebuilds every active context's playback graph
+    // (clearAllContextDevices()/reloadAllContextDevices() below), which interrupts the transport.
+    // If anything is playing, defer the whole update until playback stops instead of rebuilding the
+    // graph underneath it. lastMIDIDeviceList and the default-device IDs are left untouched here so
+    // the deferred rescan re-detects and applies this change. The pending update is flushed by
+    // rescanDeferredMidiDeviceList() (called from TransportControl::performStop()).
+    if (hasActivePlayingContext())
+    {
+        // Log only on the transition into the deferred state, not on every periodic rescan tick.
+        if (! midiDeviceListUpdateDeferred)
+            TRACKTION_LOG ("Deferring MIDI I/O device update until playback stops");
+
+        midiDeviceListUpdateDeferred = true;
+        return;
+    }
+
+    midiDeviceListUpdateDeferred = false;
 
     defaultMidiOutID = newDefaultOut;
     defaultMidiInID  = newDefaultIn;
@@ -566,7 +596,10 @@ void DeviceManager::applyNewMidiDeviceList()
         const std::shared_lock sl (midiInputsMutex);
 
         if (newMidiIns == midiInputs && newMidiOuts == midiOutputs)
+        {
+            midiDeviceListUpdateDeferred = false;
             return;
+        }
     }
 
     TRACKTION_LOG ("Updating MIDI I/O devices");
@@ -1724,6 +1757,17 @@ void DeviceManager::removeContext (EditPlaybackContext* c)
 {
     const std::unique_lock sl (contextLock);
     activeContexts.removeAllInstancesOf (c);
+}
+
+bool DeviceManager::hasActivePlayingContext() const
+{
+    const std::shared_lock sl (contextLock);
+
+    for (auto c : activeContexts)
+        if (c != nullptr && c->isPlaying())
+            return true;
+
+    return false;
 }
 
 void DeviceManager::clearAllContextDevices()

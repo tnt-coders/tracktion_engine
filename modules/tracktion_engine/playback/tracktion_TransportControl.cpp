@@ -1685,6 +1685,8 @@ void TransportControl::performStop()
 
     if (transportState->canSendMMCStop)
         sendMMCCommand (juce::MidiMessage::mmc_stop);
+
+    engine.getDeviceManager().rescanDeferredMidiDeviceList();
 }
 
 void TransportControl::performPositionChange()
