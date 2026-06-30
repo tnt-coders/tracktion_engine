@@ -411,7 +411,6 @@ void DeviceManager::initialise (int defaultNumInputs, int defaultNumOutputs)
 
     loadSettings();
     finishedInitialising = true;
-    rescanMidiDeviceList();
     rescanWaveDeviceList();
     updateNumCPUs();
 
@@ -419,6 +418,7 @@ void DeviceManager::initialise (int defaultNumInputs, int defaultNumOutputs)
 
     midiRescanIntervalSeconds = engine.getPropertyStorage().getProperty (SettingID::midiScanIntervalSeconds, 4);
     restartMidiCheckTimer();
+    rescanMidiDeviceList();
 }
 
 void DeviceManager::closeDevices()
